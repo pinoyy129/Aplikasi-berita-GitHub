@@ -1,0 +1,404 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Aplikasi Cuaca Indonesia — Versi Enhanced</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Chart.js untuk mini grafik -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    @keyframes fade-in { from{opacity:0;transform:translateY(20px);}to{opacity:1;transform:translateY(0);} }
+    .animate-fade-in { animation: fade-in 0.6s ease-out; }
+    .custom-scrollbar::-webkit-scrollbar { width: 8px; }
+    .custom-scrollbar::-webkit-scrollbar-track { background: rgba(255,255,255,0.06); border-radius:10px; }
+    .custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.18); border-radius:10px; }
+    .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.26); }
+
+    /* subtle glass effect for cards on darker bg */
+    .glass { background: linear-gradient(180deg, rgba(255,255,255,0.06), rgba(255,255,255,0.03)); backdrop-filter: blur(6px); }
+  </style>
+</head>
+<body class="min-h-screen bg-gradient-to-br from-blue-900 via-blue-700 to-blue-500 text-white font-sans">
+  <div id="app" class="min-h-screen flex flex-col">
+    <!-- container-bg jadi flex row untuk sidebar + main, dan stretch sampai bawah -->
+    <div id="container-bg" class="flex flex-1 lg:flex-row flex-col w-full max-w-screen-2xl mx-auto">
+      <!-- SIDEBAR -->
+      <aside class="lg:w-1/4 w-full bg-white/6 backdrop-blur-md p-5 border-r border-white/10 flex flex-col gap-3">
+        <div>
+          <h2 class="text-xl font-bold text-white text-center lg:text-left">🌏 Pilih Kota / Provinsi</h2>
+          <div class="mt-3 flex gap-2">
+            <input id="searchInput" type="text" placeholder="Cari kota/provinsi..."
+              class="flex-1 px-3 py-2 rounded-lg bg-white/10 placeholder-white/60 text-white outline-none focus:ring-2 focus:ring-sky-400" />
+            <button id="btnClear" class="px-3 py-2 rounded-lg bg-white/10 hover:bg-white/20">Reset</button>
+          </div>
+        </div>
+
+        <div id="cityList" class="flex-1 overflow-y-auto custom-scrollbar mt-2 space-y-2"></div>
+
+        <div class="text-xs text-white/70 pt-2 border-t border-white/5">
+          <p class="mb-1">Tip: klik nama kota untuk melihat prakiraan</p>
+          <p>© 2025 Cuaca Indonesia</p>
+        </div>
+      </aside>
+
+      <!-- MAIN -->
+      <main class="flex-1 p-6 lg:p-8 flex flex-col gap-4">
+        <!-- Header -->
+        <header class="w-full text-center animate-fade-in">
+          <h1 class="text-4xl md:text-5xl font-extrabold">☁ Cuaca Indonesia</h1>
+          <p class="text-blue-100 mt-1">Prediksi cuaca akurat untuk berbagai kota di Indonesia</p>
+          <p id="clock" class="text-blue-200 text-sm mt-2"></p>
+        </header>
+
+        <!-- Weather + Controls -->
+        <section id="weatherSection" class="w-full animate-fade-in"></section>
+
+        <!-- Mini Chart (line for 5-day) -->
+        <div id="miniChartWrap" class="w-full glass rounded-xl p-4 border border-white/10 shadow-sm hidden">
+          <canvas id="miniChart" height="60"></canvas>
+        </div>
+
+        <!-- Forecast area -->
+        <section id="forecastSection" class="w-full"></section>
+
+        <!-- Footer pinned to bottom of main -->
+        <footer class="mt-auto text-center text-white/60 text-xs pt-4">
+          Simulasi Cuaca | © 2025 Cuaca Indonesia — by Lulu Rachel
+        </footer>
+      </main>
+    </div>
+  </div>
+
+  <script>
+  // -------------------------
+  // DATA & HELPERS
+  // -------------------------
+  const weatherEmojis = {
+    'Clear': '☀', 'Clouds': '☁', 'Rain': '🌧', 'Drizzle': '🌦',
+    'Terbit':'🌅','Terbenam':'🌇'
+  };
+
+  const indonesiaCities = [
+    { name: 'Jakarta', lat:-6.2088, lon:106.8456, province:'DKI Jakarta' },
+    { name: 'Surabaya', lat:-7.2575, lon:112.7521, province:'Jawa Timur' },
+    { name: 'Bandung', lat:-6.9175, lon:107.6191, province:'Jawa Barat' },
+    { name: 'Medan', lat:3.5952, lon:98.6722, province:'Sumatera Utara' },
+    { name: 'Semarang', lat:-6.9667, lon:110.4167, province:'Jawa Tengah' },
+    { name: 'Makassar', lat:-5.1477, lon:119.4327, province:'Sulawesi Selatan' },
+    { name: 'Denpasar', lat:-8.6705, lon:115.2126, province:'Bali' },
+    { name: 'Palembang', lat:-2.9761, lon:104.7754, province:'Sumatera Selatan' },
+    { name: 'Balikpapan', lat:-1.2379, lon:116.8529, province:'Kalimantan Timur' },
+    { name: 'Pontianak', lat:-0.0263, lon:109.3425, province:'Kalimantan Barat' },
+    { name: 'Manado', lat:1.4748, lon:124.8421, province:'Sulawesi Utara' },
+    { name: 'Jayapura', lat:-2.5920, lon:140.6682, province:'Papua' }
+  ].sort((a,b)=>a.name.localeCompare(b.name));
+
+  let state = { selectedCity:'', searchTerm:'', weatherData:null, forecast:[], loading:false, miniChart:null };
+
+  // -------------------------
+  // UTIL FUNCTIONS
+  // -------------------------
+  function getBackgroundGradient(main) {
+    if (!main) return 'bg-gradient-to-br from-blue-900 via-blue-700 to-blue-500';
+    const m = main.toLowerCase();
+    if (m.includes('rain')) return 'bg-gradient-to-br from-gray-800 via-gray-700 to-blue-900';
+    if (m.includes('cloud')) return 'bg-gradient-to-br from-gray-700 via-blue-800 to-blue-600';
+    if (m.includes('drizzle')) return 'bg-gradient-to-br from-blue-200 via-cyan-200 to-blue-400';
+    return 'bg-gradient-to-br from-blue-600 via-cyan-500 to-blue-400';
+  }
+
+  function formatTime(ts){
+    return new Date(ts*1000).toLocaleTimeString('id-ID',{hour:'2-digit',minute:'2-digit'});
+  }
+  function formatDate(ts){
+    return new Date(ts*1000).toLocaleDateString('id-ID',{weekday:'short',day:'numeric',month:'short'});
+  }
+
+  // -------------------------
+  // RENDER CITY LIST
+  // -------------------------
+  function renderCityList(){
+    const container = document.getElementById('cityList');
+    const term = state.searchTerm.trim().toLowerCase();
+    const filtered = indonesiaCities.filter(c => c.name.toLowerCase().includes(term) || c.province.toLowerCase().includes(term));
+    if (filtered.length === 0) {
+      container.innerHTML = `<div class="text-white/70 text-center py-4">Tidak ditemukan</div>`;
+      return;
+    }
+    container.innerHTML = filtered.map(c => `
+      <button onclick="selectCity('${c.name}')" class="w-full text-left px-3 py-2 rounded-md mb-1 font-medium transition ${state.selectedCity===c.name?'bg-white text-blue-900 font-bold shadow-sm':'bg-white/6 text-white hover:bg-white/10'}">
+        ${c.name} <span class="text-xs text-blue-200 ml-2">(${c.province})</span>
+      </button>
+    `).join('');
+  }
+
+  // -------------------------
+  // SIMULATION / GENERATE DATA (placeholder for real API)
+  // -------------------------
+  function generateWeatherData(city){
+    const base = (city.lat < 0 ? 28 : 30) + (Math.random()*4-2);
+    const types = ['Clear','Clouds','Rain','Drizzle'];
+    const main = types[Math.floor(Math.random()*types.length)];
+    const temp = Math.round(base*10)/10;
+    const humidity = 60 + Math.floor(Math.random()*30);
+    const wind = (1 + Math.random()*6).toFixed(1);
+    const pressure = 1008 + Math.floor(Math.random()*25);
+    const sunrise = Math.floor((new Date()).setHours(5,30,0,0)/1000);
+    const sunset = Math.floor((new Date()).setHours(17,45,0,0)/1000);
+    return {
+      cityInfo: city,
+      weather: [{ main, description: main==='Clear'?'Cerah': main==='Clouds'?'Berawan': main==='Rain'?'Hujan ringan':'Gerimis', icon: weatherEmojis[main] }],
+      main: { temp, feels_like: Math.round((temp+1)*10)/10, temp_min: Math.round((temp-2)*10)/10, temp_max: Math.round((temp+3)*10)/10, humidity, pressure },
+      wind: { speed: wind },
+      visibility: 8000 + Math.floor(Math.random()*3000),
+      sys: { sunrise, sunset }
+    };
+  }
+
+  function generateForecastData(baseTemp){
+    const ar = [], types = ['Clear','Clouds','Rain','Drizzle'];
+    for (let i=1;i<=5;i++){
+      const date = Math.floor(Date.now()/1000) + i*86400;
+      const main = types[Math.floor(Math.random()*types.length)];
+      const t = Math.round((baseTemp + (Math.random()*4-2)) *10)/10;
+      ar.push({
+        dt: date,
+        main: { temp: t, temp_min: Math.round((t-2)*10)/10, temp_max: Math.round((t+2)*10)/10, humidity: 55 + Math.floor(Math.random()*35) },
+        weather: [{ main, description: main==='Clear'?'cerah': main==='Clouds'?'berawan': main==='Rain'?'hujan ringan':'gerimis', icon: weatherEmojis[main] }]
+      });
+    }
+    return ar;
+  }
+
+  // -------------------------
+  // FETCH (simulated) & set background
+  // -------------------------
+  function fetchWeather(city){
+    state.loading = true;
+    renderWeather(); // show loader
+    setTimeout(()=>{ // simulate network
+      const w = generateWeatherData(city);
+      state.weatherData = w;
+      state.forecast = generateForecastData(w.main.temp);
+      state.loading = false;
+      // set background gradient class for body / container
+      document.getElementById('container-bg').className = 'flex flex-1 lg:flex-row flex-col w-full max-w-screen-2xl mx-auto ' + getBackgroundGradient(w.weather[0].main);
+      renderWeather();
+      renderMiniChart();
+      renderForecast();
+    }, 600);
+  }
+
+  // -------------------------
+  // RENDER WEATHER (main card)
+  // -------------------------
+  function renderWeather(){
+    const el = document.getElementById('weatherSection');
+    if (state.loading) {
+      el.innerHTML = `<div class="w-full p-8 flex flex-col items-center justify-center"><div class="animate-spin rounded-full h-14 w-14 border-t-4 border-b-4 border-white/80"></div><p class="mt-4 text-white">Memuat data cuaca...</p></div>`;
+      return;
+    }
+    const w = state.weatherData;
+    if (!w) {
+      el.innerHTML = `<div class="w-full p-8 text-center text-white/80">Pilih kota untuk melihat info cuaca</div>`;
+      return;
+    }
+
+    // ensure text labels Kelembaban etc are white
+    el.innerHTML = `
+      <div class="glass rounded-3xl p-6 border border-white/10 shadow-xl">
+        <div class="flex flex-col md:flex-row gap-6 items-start">
+          <div class="flex-1">
+            <div class="flex items-center gap-4">
+              <div class="text-6xl">${w.weather[0].icon}</div>
+              <div>
+                <h2 class="text-3xl font-bold">${w.cityInfo.name}</h2>
+                <p class="text-sm text-white/80">${w.cityInfo.province}</p>
+              </div>
+            </div>
+
+            <div class="mt-4 flex items-end gap-6">
+              <div class="text-6xl font-bold">${Math.round(w.main.temp)}°C</div>
+              <div class="text-sm text-white/90 capitalize">${w.weather[0].description}</div>
+            </div>
+
+            <div class="mt-4 flex gap-2 flex-wrap">
+              <div class="bg-white/5 px-4 py-1 rounded-lg text-white">Terasa: <b>${Math.round(w.main.feels_like)}°C</b></div>
+              <div class="bg-white/5 px-4 py-1 rounded-lg text-white">Min: <b>${Math.round(w.main.temp_min)}°C</b></div>
+              <div class="bg-white/5 px-4 py-1 rounded-lg text-white">Maks: <b>${Math.round(w.main.temp_max)}°C</b></div>
+            </div>
+          </div>
+
+          <div class="w-full md:w-1/2 grid grid-cols-2 md:grid-cols-3 gap-3">
+            <div class="bg-white/6 p-3 rounded-xl border border-white/6 text-center">
+              <div class="text-xl">💧</div>
+              <div class="text-sm text-white">Kelembaban</div>
+              <div class="text-lg font-bold text-white">${w.main.humidity}%</div>
+            </div>
+
+            <div class="bg-white/6 p-3 rounded-xl border border-white/6 text-center">
+              <div class="text-xl">💨</div>
+              <div class="text-sm text-white">Angin</div>
+              <div class="text-lg font-bold text-white">${w.wind.speed} m/s</div>
+            </div>
+
+            <div class="bg-white/6 p-3 rounded-xl border border-white/6 text-center">
+              <div class="text-xl">🎚</div>
+              <div class="text-sm text-white">Tekanan</div>
+              <div class="text-lg font-bold text-white">${w.main.pressure} hPa</div>
+            </div>
+
+            <div class="bg-white/6 p-3 rounded-xl border border-white/6 text-center">
+              <div class="text-xl">👁</div>
+              <div class="text-sm text-white">Visibilitas</div>
+              <div class="text-lg font-bold text-white">${(w.visibility/1000).toFixed(1)} km</div>
+            </div>
+
+            <div class="bg-white/6 p-3 rounded-xl border border-white/6 text-center">
+              <div class="text-xl">🌅</div>
+              <div class="text-sm text-white">Terbit</div>
+              <div class="text-lg font-bold text-white">${formatTime(w.sys.sunrise)}</div>
+            </div>
+
+            <div class="bg-white/6 p-3 rounded-xl border border-white/6 text-center">
+              <div class="text-xl">🌇</div>
+              <div class="text-sm text-white">Terbenam</div>
+              <div class="text-lg font-bold text-white">${formatTime(w.sys.sunset)}</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  // -------------------------
+  // MINI CHART - Chart.js
+  // -------------------------
+  function renderMiniChart(){
+    const fc = state.forecast;
+    if (!fc || fc.length === 0) {
+      document.getElementById('miniChartWrap').classList.add('hidden');
+      return;
+    }
+    document.getElementById('miniChartWrap').classList.remove('hidden');
+
+    const labels = fc.map(d => new Date(d.dt*1000).toLocaleDateString('id-ID',{weekday:'short'}));
+    const temps = fc.map(d => Math.round(d.main.temp));
+
+    const ctx = document.getElementById('miniChart').getContext('2d');
+    if (state.miniChart) state.miniChart.destroy();
+
+    state.miniChart = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels,
+        datasets: [{
+          label: 'Suhu (°C)',
+          data: temps,
+          fill: true,
+          tension: 0.35,
+          borderWidth: 2,
+          borderColor: 'rgba(255,255,255,0.95)',
+          backgroundColor: 'rgba(255,255,255,0.08)',
+          pointRadius: 4,
+          pointBackgroundColor: 'white'
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { legend: { display: false } },
+        scales: {
+          x: { ticks: { color: 'rgba(255,255,255,0.9)' }, grid: { display:false } },
+          y: { display: false }
+        }
+      }
+    });
+  }
+
+  // -------------------------
+  // RENDER FORECAST (cards with variety)
+  // -------------------------
+  function renderForecast(){
+    const fc = state.forecast;
+    const el = document.getElementById('forecastSection');
+    if (!fc || fc.length === 0) {
+      el.innerHTML = '';
+      return;
+    }
+
+    // Make first card larger and more prominent
+    const cards = fc.map((day, idx) => {
+      const main = ('' + day.weather[0].main).toLowerCase();
+      let grad = 'from-blue-600/30 to-cyan-400/20';
+      if (main.includes('rain')) grad = 'from-slate-800/30 to-blue-700/20';
+      if (main.includes('cloud')) grad = 'from-gray-700/30 to-slate-600/20';
+      if (main.includes('clear')) grad = 'from-yellow-400/30 to-orange-400/10';
+      const prominent = idx === 0;
+      const sizeClass = prominent ? 'md:col-span-2 lg:col-span-2 scale-105' : '';
+      return `
+        <div class="rounded-2xl p-4 border border-white/10 shadow-md backdrop-blur-sm text-center transform transition hover:-translate-y-1 ${sizeClass} bg-gradient-to-br ${grad}">
+          <div class="text-sm text-white/90 mb-1">${new Date(day.dt*1000).toLocaleDateString('id-ID',{weekday:'long', day:'numeric', month:'short'})}</div>
+          <div class="text-5xl mb-2">${day.weather[0].icon}</div>
+          <div class="text-sm text-white/80 capitalize mb-2">${day.weather[0].description}</div>
+          <div class="text-3xl font-bold text-white">${Math.round(day.main.temp)}°C</div>
+          <div class="mt-2 text-xs text-white/80">↑${Math.round(day.main.temp_max)}°  •  ↓${Math.round(day.main.temp_min)}°</div>
+          <div class="mt-2 text-xs text-white/80">💧 ${day.main.humidity}%</div>
+        </div>
+      `;
+    }).join('');
+
+    // grid layout: first card spans more on larger screens
+    el.innerHTML = `
+      <div class="p-4 glass rounded-2xl border border-white/10">
+        <div class="flex items-center gap-3 mb-4">
+          <span class="text-2xl">📅</span>
+          <h3 class="text-lg font-bold">Prakiraan 5 Hari</h3>
+        </div>
+        <div class="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-5 gap-4">
+          ${cards}
+        </div>
+      </div>
+    `;
+  }
+
+  // -------------------------
+  // SELECTION & UI EVENTS
+  // -------------------------
+  window.selectCity = function(name){
+    state.selectedCity = name;
+    const city = indonesiaCities.find(c => c.name === name);
+    if (city) fetchWeather(city);
+    renderCityList();
+  };
+
+  document.getElementById('searchInput').addEventListener('input', (e) => {
+    state.searchTerm = e.target.value;
+    renderCityList();
+  });
+
+  document.getElementById('btnClear').addEventListener('click', () => {
+    state.searchTerm = '';
+    document.getElementById('searchInput').value = '';
+    renderCityList();
+  });
+
+  // -------------------------
+  // CLOCK + INIT
+  // -------------------------
+  function renderClock(){
+    document.getElementById('clock').textContent = new Date().toLocaleString('id-ID', {
+      weekday:'long', year:'numeric', month:'long', day:'numeric',
+      hour:'2-digit', minute:'2-digit', second:'2-digit'
+    });
+  }
+  setInterval(renderClock, 1000);
+  renderClock();
+
+  // initial render
+  renderCityList();
+  renderWeather(); // empty
+  </script>
+</body>
+</html>
